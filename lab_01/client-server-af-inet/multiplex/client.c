@@ -1,18 +1,19 @@
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <errno.h>
 #include <string.h>
-#include <signal.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <unistd.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/time.h>
 
 #define PORT 1337
 #define ITER 10000
 
 int fl = 1;
+
 void sig_handler(int sig_num)
 {
     fl = 0;
@@ -30,7 +31,7 @@ int main(int argc, char **argv)
         printf("usage: %s IP", argv[0]);
         exit(1);
     }
-    
+
     if (signal(SIGINT, sig_handler) == SIG_ERR)
     {
         perror("signal");
@@ -59,7 +60,7 @@ int main(int argc, char **argv)
             else
                 client_type = 'p';
         }
-        
+
         sockfd = socket(AF_INET, SOCK_STREAM, 0);
         if (sockfd == -1)
         {
@@ -83,7 +84,7 @@ int main(int argc, char **argv)
             close(sockfd);
             exit(1);
         }
-        
+
         read_len = read(sockfd, buf, sizeof(buf));
         if (read_len == -1)
         {
@@ -95,7 +96,7 @@ int main(int argc, char **argv)
         else if (read_len == 0)
         {
             printf("connection terminated\n");
-            close(sockfd);\
+            close(sockfd);
             exit(1);
         }
         else

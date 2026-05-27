@@ -1,1 +1,13 @@
 *.out
+*.ko
+*.symvers
+*out
+*.bkp
+.cache
+*.json
+*.cmd
+*.o
+*.mod
+*.mod.c
+*.log
+*.order

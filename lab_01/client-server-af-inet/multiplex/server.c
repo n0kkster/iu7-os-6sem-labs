@@ -1,28 +1,35 @@
 #define _GNU_SOURCE
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <signal.h>
 #include <errno.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
+#include <unistd.h>
+
+#include <netinet/in.h>
+#include <sys/epoll.h>
+#include <sys/ipc.h>
 #include <sys/sem.h>
 #include <sys/stat.h>
-#include <pthread.h>
-#include <netinet/in.h>
 #include <sys/types.h>
-#include <sys/ipc.h>
-
-
-#include <sys/epoll.h>
 
 #define SEM_EMPTY 0
 #define SEM_FULL 1
 
-struct sembuf produce_begin[1] = {{SEM_EMPTY, -1, 0}};
-struct sembuf produce_end[1] = {{SEM_FULL, 1, 0}};
-struct sembuf consume_begin[1] = {{SEM_FULL, -1, 0}};
-struct sembuf consume_end[1] = {{SEM_EMPTY, 1, 0}};
+struct sembuf produce_begin[1] = {
+    { SEM_EMPTY, -1, 0 }
+};
+struct sembuf produce_end[1] = {
+    { SEM_FULL, 1, 0 }
+};
+struct sembuf consume_begin[1] = {
+    { SEM_FULL, -1, 0 }
+};
+struct sembuf consume_end[1] = {
+    { SEM_EMPTY, 1, 0 }
+};
 
 #define PORT 1337
 #define RESPOND_BUF_SIZE 3
@@ -32,7 +39,7 @@ struct sembuf consume_end[1] = {{SEM_EMPTY, 1, 0}};
 
 #define N 26
 
-struct timespec timeout = {.tv_sec = 0, .tv_nsec = 500000};
+struct timespec timeout = { .tv_sec = 0, .tv_nsec = 500000 };
 
 typedef struct
 {
@@ -46,14 +53,15 @@ typedef struct
     struct timespec starttime;
 } args_t;
 
-
 int fl = 1;
+
 void sig_handler(int sig_num)
 {
     fl = 0;
 }
 
-void producer(int sem_fd, int conn_fd, char *buf, int *producer_index_ptr, char *letter_ptr)
+void producer(int sem_fd, int conn_fd, char *buf, int *producer_index_ptr,
+              char *letter_ptr)
 {
     char msg_buf[RESPOND_BUF_SIZE] = "ER";
     if (semtimedop(sem_fd, produce_begin, 1, &timeout) == -1)
@@ -150,10 +158,11 @@ void worker(args_t args)
 
     if ((read_len = read(args.conn_fd, &type, sizeof(type))) > 0)
     {
-        switch(type)
+        switch (type)
         {
             case 'p':
-                producer(args.sem_fd, args.conn_fd, args.buf, args.producer_index_ptr, args.letter_ptr);
+                producer(args.sem_fd, args.conn_fd, args.buf, args.producer_index_ptr,
+                         args.letter_ptr);
                 break;
             case 'c':
                 consumer(args.sem_fd, args.conn_fd, args.buf, args.consumer_index_ptr);
@@ -172,7 +181,8 @@ void worker(args_t args)
     }
 
     clock_gettime(CLOCK_REALTIME, &endtime);
-    usec = (endtime.tv_sec - args.starttime.tv_sec) * 1.0e+6 + (endtime.tv_nsec - args.starttime.tv_nsec) / 1.0e+3;
+    usec = (endtime.tv_sec - args.starttime.tv_sec) * 1.0e+6
+         + (endtime.tv_nsec - args.starttime.tv_nsec) / 1.0e+3;
     fprintf(args.fptr, "%lf \n", usec);
 }
 
@@ -248,7 +258,7 @@ int main(void)
     int opt = 1;
     setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    if(bind(sock_fd, (struct sockaddr *)&srvr_addr, sizeof(srvr_addr)) < 0)
+    if (bind(sock_fd, (struct sockaddr *)&srvr_addr, sizeof(srvr_addr)) < 0)
     {
         fclose(fptr);
         close(sock_fd);
@@ -338,7 +348,6 @@ int main(void)
             }
         }
     }
-   
 
     fclose(fptr);
     close(sock_fd);
