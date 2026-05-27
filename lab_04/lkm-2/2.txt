@@ -1,0 +1,6 @@
+[ 3732.267907] + module md1 start!
+[ 3732.297091] + module md2 start!
+[ 3732.297097] + data string exported from md1 : Привет мир!
+[ 3732.297099] + string returned md1_proc() is : Привет мир!
+[ 3743.151686] + module md2 unloaded!
+[ 3743.197113] + module md1 unloaded!
