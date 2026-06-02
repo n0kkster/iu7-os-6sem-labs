@@ -1,0 +1,191 @@
+Прерывания от сетевой карточки (аппаратные), какая-то там нижняя половина, обрабатывается через Soft IRQ.
+Реальность оказалась другой, прерываний от сетевой карты очень много, каждый пакет обрабатывается аппаратно,
+это большая нагрузка на систему. Поэтому NAPI (New API) заменяет прерывания на опрос. 
+
+Рассматриваем аппаратные прерывания от внешних устройств, выполняем работу на базе клавиатуры PS/2.
+
+Старые прерывания содержали флаг FAST_INTERRUPT, современные прерывания содержат флаг TIMER, это единственные быстрые прерывания
+в системе. Аппаратные прерывания делятся на быстрые и медленные. Флаг IRQ_SHARED позволяет разделять линию IRQ, по которой
+на процессор приходит прерывания, между несколькими обработчиками прерывания. Поэтому мы имеем возможность написать 
+собственный обработчик прерывания от клавиатуры и повеситься на IRQ1.
+
+#define __IRQF_TIMER	0x00000200
+#define __IRQF_PERCPU	0x00000400
+...
+#define IRQF_TIMER (__IRQF_TIMER | IRQF_NO_THREAD | IRQF_NO_SUSPEND)
+
+Прерывания от системного таймера выполняются от начала до конца, оно не может быть многопоточным, не может приостанавливаться.
+
+Обертка функция над request_threaded_irq:
+static inline __must_check request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags, const char *name, void *dev)
+{
+	return request_threaded_irq(irq, handler, NULL, flags | IRQF_COND_ONE_SHOT, name, dev);
+											  ????
+}
+
+irq - линия IRQ, для клавы - 1
+handler - имя хендлера (да ну насмерть)
+flags - флаги, должен стоять флаг SHARED
+name - имя, которое видно в proc
+
+struct irqaction
+{
+	irq_handler_t handler;
+	union
+	...
+	struct irqaction *next;
+	...
+	struct task_struct *thread;
+	unsigned int irq;
+	...
+	const char *name;
+	struct proc_dir_entry *dir;
+};
+
+enum irqreturn
+{
+	IRQ_NONE 		= (0 << 0), // не было выполнено прерывание
+	IRQ_HANDLED		= (1 << 0), // прерывание было выполнено данным девайсом
+	IRQ_WAKE_THREAD = (1 << 1)  // кто-то там прервал поток обработки
+};
+
+typedef enum irqreturn irqreturn_t;
+
+==========================================
+
+Медленные прерывания делятся на две части, аппаратным прерываниям остается верхняя половина (top half). 
+Много прерываний влияет на отзывчивость системы. 
+У системы нет быстродействия. Быстродействие - триггер слово.
+
+Нижняя половина:
+1. softirq - гибкие прерывания
+2. тасклеты
+3. queue work
+
+SOFT IRQ
+В системе определено 10 SOFT IRQ. Необходимо избегать выделения новых SOFT IRQ.
+
+enum
+{
+	HI_SOFTIRQ 		= 0,
+	TIMER_SOFTIRQ,
+	NET_TX_SOFTIRQ,
+	NET_RX_SOFTIRQ,
+	BLOCK_SOFTIRQ,
+	IRQ_POLL_SOFTIRQ,
+	TASKLET_SOFTIRQ,
+	SHED_SOFTIRQ,
+	HRTIMER_SOFTIRQ,
+	RCU_SOFTIRQ,
+	NR_SOFTIRQS
+};
+
+Тасклет является одним из видов softirq, softirq пишутся таким образом, что они могут выполняться реально параллельно, то есть одновременно
+на разных процессорах, то есть они разрабатываются с учетом всех возможных взаимоисключений. Это значит, что softirq сериализуются.
+Тасклеты созданы для упрощения написания отложенных действий, для того чтобы упростить коды обработчиков bottom half, для этого
+для тасклетов установлено ограничение - они не сериализуются, не могут выполняться одновременно. Если какой-то тасклет
+выполняется на каком-то ядре, то такой же тасклет на другом ядре выполняться не может. 
+
+struct softirq_action
+{
+	void (*action)(struct softirq_action *);
+};
+
+На softirq определены следующие функции:
+- asmlinkage void do_softirq(void);
+- asmlinkage void __do_softirq(void);
+- extern void open_softirq(int nr, void (*action)(struct softirq_action *));
+- extern void softirq_init(void);
+- extern void raise_softirq_irgoff(unsigned int nr);
+- extern void __raise_softirq_irgoff(unsigned int nr);
+
+============================
+
+Быстрые прерывания выполняются от начала до конца.
+
+Системы, в которых мы работаем, не поддерживают вложенные прерывания, в отличие от IBM360, там были реализованы вложенные прерывания.
+Если процессор выполняет обработчик прерывания, то на этом процессоре запрещены все прерывания, а на других процессорах запрещены прерывания
+по данной линии IRQ. Посколько прерывания ... выполняются на высочайшем уровне приоритета, если такое прерывание будет выполняться длительное
+время, то такое прерывание будет влиять на отзывчивость системы.
+
+
+============ ТАСКЛЕТЫ =============
+
+Тасклеты были реализованы как компромисс, тасклеты являются видом softirq, тасклеты не могут выполняться параллельно, один и тот же тасклет
+в один момент времени может выполняться в единственном экземпляре. Тасклеты являются атомарными, то есть выполняются от начала до конца, на
+том же процессоре, на котором выполнялся обработчик прерывания, который запланировал выполнение тасклета.
+
+В системе объявлена структура:
+
+struct tasklet_struct
+{
+	struct tasklet_struct next;
+	unsigned long state;
+	atomic_t count; // счетчик ссылок на тасклет, если равен 0, то тасклет разрешен и может выполняться, если он помечен как запланированный, иначе выполнение запрещено
+	bool use_callback;
+	union
+	{
+		void(*func)(unsigned long data);
+		void(*callback)(struct tasklet_struct *t);
+	};
+	unsigned long data;
+}
+
+У тасклета есть состояние - state, имеется 3 значения:
+- 0
+- TASKLET_STATE_SCHED
+- TASKLET_STATE_RUN
+
+enum
+{
+	TASKLET_STATE_SCHED, // запланировано выполнение
+	TASKLET_STATE_RUN
+};
+
+Тасклеты могут создаваться статически и динамически. Статически тасклеты создаются с помощью двух макросов:
+- DECLARE_TASKLET(name, func, data);
+- DECALRE_TASKLET_DISABLED(name, func, data);
+С именем name, функцией func, которой передается аргумент data.
+Первый макрос создает тасклет с count=0, соотв. тасклет разрешен к выполнению
+Второй макрос создает тасклет с count=1, соотв. тасклет запрещен к выполнению
+
+Динамически тасклеты создаются функцией:
+struct tasklet_struct *taskl;
+tasklet_init(taskl, tasklet_func, data);
+
+extern void tasklet_init(struct tasklet_struct *t, void(*func)(unsigned long), unsigned long data);
+
+Обработчик аппаратного прерывания должен запланировать тасклет, функция тасклет выполнит действия, 
+которые мы ей предпишем. Существует в ядре две функции:
+- static inline void __tasklet_schedule(struct tasklet_struct *t);
+- static inline void tasklet_schedule(struct tasklet_struct *t)
+{
+	if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
+	{
+		__tasklet_schedule(t);
+	}
+}
+
+- static inline void __tasklet_hi_schedule(struct tasklet_struct *t); // высокоприоритетные тасклеты
+- static inline void tasklet_hi_schedule(struct tasklet_struct *t)
+{
+	if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
+	{
+		__tasklet_hi_schedule(t);
+	}
+}
+
+Если экземпляр тасклета выполняется, то другой экземпляр этого же тасклета не может выполняться, даже если
+он запланирован. Таким образом в тасклете не обязательно в полной мере реализовывать взаимоисключения, однако
+разные тасклеты могут обращаться к одним и тем же данным, но тасклеты не блокируются, поэтому только активное 
+ожидание, поэтому на тасклетах определены следующие функции:
+- static inline int tasklet_try_lock(struct tasklet_struct *t)
+{
+	return !test_and_set_bit(TASKLET_STATE_RUN, &t->state);
+}
+- static inline void tasklet_unlock(struct tasklet_struct *t)
+{
+	smp_mb_before_atomic();
+	clear_bit(TASKLET_STATE_RUN, &t->state);
+} 
+
